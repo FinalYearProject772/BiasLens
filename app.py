@@ -1,18 +1,13 @@
-# app_merged.py
+# app.py
 
 import streamlit as st
 import plotly.graph_objects as go
 import json
-import gc
-import matplotlib.pyplot as plt
 from text_generator import generate_text
-from modules.bias_detector1 import detect_bias
-from modules.llm_analyzer import analyze_bias_with_llm
+from modules import bias_detector, bias_detector1
+from llm_analyzer import analyze_bias_with_llm
 from test_logger import save_test_case, load_all_test_cases, get_accuracy_stats, delete_test_case, clear_all_test_cases
-from bias_mitigator import mitigate_bias
-
-# Memory optimization
-gc.collect()
+from modules.bias_mitigator import mitigate_bias
 
 st.set_page_config(
     page_title="Bias Lens",
@@ -451,6 +446,40 @@ div[data-testid="stButton"] button:hover {
     color: var(--muted);
     margin-bottom: 0.4rem;
 }
+
+/* ── TAB STYLING ── */
+[data-testid="stTabs"] [role="tab"]:nth-of-type(1) {
+    color: var(--red) !important;
+    transition: color 0.15s !important;
+}
+[data-testid="stTabs"] [role="tab"]:nth-of-type(1):hover {
+    color: #8c291f !important;
+}
+
+[data-testid="stTabs"] [role="tab"]:nth-of-type(2) {
+    color: var(--blue) !important;
+    transition: color 0.15s !important;
+}
+[data-testid="stTabs"] [role="tab"]:nth-of-type(2):hover {
+    color: #0f2440 !important;
+}
+
+/* ── RADIO BUTTON STYLING ── */
+[data-testid="stRadio"] label:nth-of-type(1) {
+    color: var(--red) !important;
+    transition: color 0.15s !important;
+}
+[data-testid="stRadio"] label:nth-of-type(1):hover {
+    color: #8c291f !important;
+}
+
+[data-testid="stRadio"] label:nth-of-type(2) {
+    color: var(--blue) !important;
+    transition: color 0.15s !important;
+}
+[data-testid="stRadio"] label:nth-of-type(2):hover {
+    color: #0f2440 !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -462,7 +491,7 @@ st.markdown(f"""
 <div class="masthead">
     <div class="masthead-title">Bias Lens</div>
     <div class="masthead-meta">
-        Gender · Age · Non-Binary Bias Detection and Mitigation<br>
+        Gender · Age · Non-Binary Bias Detection And Mitigation<br>
         Dual-Layer Analysis System<br>
         {today}
     </div>
@@ -578,18 +607,9 @@ if run or reanalyze:
     with st.spinner("Running ML bias classifier…"):
         try:
             if model_mode == "RoBERTa Only (Ablation)":
-                import sys, importlib.util, os
-                key = "modules.bias_detector1"
-                if key not in sys.modules:
-                    fpath = os.path.join(os.path.dirname(__file__), "modules", "bias_detector1.py")
-                    spec  = importlib.util.spec_from_file_location(key, fpath)
-                    mod   = importlib.util.module_from_spec(spec)
-                    sys.modules[key] = mod
-                    spec.loader.exec_module(mod)
-                _rob_only   = sys.modules[key]
-                rule_result = _rob_only.detect_bias(generated_text)
+                rule_result = bias_detector1.detect_bias(generated_text)
             else:
-                rule_result = detect_bias(generated_text)
+                rule_result = bias_detector.detect_bias(generated_text)
         except Exception as e:
             st.error(f"Rule-based detection failed: {e}")
             st.stop()
@@ -788,17 +808,7 @@ if run or reanalyze:
             st.markdown("""
             <div class="layer-head">
                 <div class="layer-num">III</div>
-                <div>
-                    <div class="layer-title">Bias Mitigation
-                        &nbsp;<span class="layer-tag">Lexicon · spaCy · BERT MLM · CDA · WordNet · SVO Agency · Embedding Validation</span>
-                    </div>
-                </div>
-            </div>
-            <div class="layer-desc">
-                Seven-stage advanced NLP pipeline — no LLM required.
-                Lexicon substitution → spaCy NER + dependency parsing → BERT masked LM →
-                Counterfactual Data Augmentation → WordNet sense-aware debiasing →
-                SVO triple agency rebalancing → Sentence-BERT bias reduction scoring.
+                <div class="layer-title">Bias Mitigation</div>
             </div>
             """, unsafe_allow_html=True)
 
@@ -839,57 +849,6 @@ if run or reanalyze:
                                delta=f'was {val.get("orig_gender_sensitivity",0):.3f} / {val.get("orig_age_sensitivity",0):.3f}')
                     if val.get("warning"):
                         st.warning(val["warning"])
-
-                # ── Stage-by-stage expanders ──────────────────────
-                with st.expander("📖 Stage 1 — Lexicon Substitution"):
-                    if mitigation["rule_changes"]:
-                        st.markdown("".join(f'<div class="change-item"><span class="change-arrow">→</span><span class="change-text">{c}</span></div>' for c in mitigation["rule_changes"]), unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body" style="margin-top:.8rem;">{mitigation["stage1_text"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="empty-layer">No lexicon matches found.</div>', unsafe_allow_html=True)
-
-                with st.expander("🔬 Stage 2 — spaCy NER + Dependency Parsing"):
-                    if mitigation.get("spacy_changes"):
-                        st.markdown("".join(f'<div class="change-item"><span class="change-arrow">→</span><span class="change-text">{c}</span></div>' for c in mitigation["spacy_changes"]), unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body" style="margin-top:.8rem;">{mitigation["stage2_text"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="empty-layer">No parse-based corrections needed.</div>', unsafe_allow_html=True)
-                    if mitigation.get("passive_flags"):
-                        st.markdown('<div class="section-label" style="margin-top:.6rem;">Passive Construction Flags</div>', unsafe_allow_html=True)
-                        for pf in mitigation["passive_flags"]:
-                            st.markdown(f'<div class="change-item"><span class="change-arrow">⚠</span><span class="change-text">{pf}</span></div>', unsafe_allow_html=True)
-
-                with st.expander("🤖 Stage 3 — BERT Masked LM Contextual Replacement"):
-                    if mitigation.get("bert_changes"):
-                        st.markdown("".join(f'<div class="change-item"><span class="change-arrow">→</span><span class="change-text">{c}</span></div>' for c in mitigation["bert_changes"]), unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body" style="margin-top:.8rem;">{mitigation["stage3_text"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="empty-layer">No BERT replacements applied.</div>', unsafe_allow_html=True)
-
-                with st.expander("🔄 Stage 4 — Counterfactual Data Augmentation (CDA)"):
-                    if mitigation.get("cda_changes"):
-                        st.markdown("".join(f'<div class="change-item"><span class="change-arrow">→</span><span class="change-text">{c}</span></div>' for c in mitigation["cda_changes"]), unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body" style="margin-top:.8rem;">{mitigation["stage4_text"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="empty-layer">No attribute-dependent sentences detected by CDA.</div>', unsafe_allow_html=True)
-
-                with st.expander("📚 Stage 5 — WordNet Sense-Aware Debiasing"):
-                    if mitigation.get("wordnet_changes"):
-                        st.markdown("".join(f'<div class="change-item"><span class="change-arrow">→</span><span class="change-text">{c}</span></div>' for c in mitigation["wordnet_changes"]), unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body" style="margin-top:.8rem;">{mitigation["stage5_text"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="empty-layer">No residual biased words found for WordNet replacement.</div>', unsafe_allow_html=True)
-
-                with st.expander("⚖️ Stage 6 — SVO Triple Agency Rebalancing"):
-                    if mitigation.get("svo_changes"):
-                        st.markdown("".join(f'<div class="change-item"><span class="change-arrow">→</span><span class="change-text">{c}</span></div>' for c in mitigation["svo_changes"]), unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body" style="margin-top:.8rem;">{mitigation["stage6_text"]}</div>', unsafe_allow_html=True)
-                    else:
-                        st.markdown('<div class="empty-layer">No passive negative-agency constructions detected.</div>', unsafe_allow_html=True)
-                    if mitigation.get("double_standards"):
-                        st.markdown('<div class="section-label" style="margin-top:.6rem;">Double-Standard Patterns Detected</div>', unsafe_allow_html=True)
-                        for ds in mitigation["double_standards"]:
-                            st.markdown(f'<div class="change-item"><span class="change-arrow">⚠</span><span class="change-text">{ds}</span></div>', unsafe_allow_html=True)
 
         # ── AUTO-SAVE TEST CASE ───────────────────────────────
         with tab1:
@@ -986,7 +945,7 @@ with tab2:
             "High":   ("#ffebee", "#c0392b"),
         }
 
-        for case in reversed(cases):   # newest first
+        for idx, case in enumerate(reversed(cases)):   # newest first
             sev   = case["summary"]["combined_severity"]
             bg, fg = sev_colors.get(sev, ("#fff8e1", "#d4860a"))
             types_str = ", ".join(case["summary"]["all_bias_types"]) if case["summary"]["all_bias_types"] else "None"
@@ -1089,7 +1048,7 @@ with tab2:
                             st.warning(val["warning"])
 
                 # Delete button
-                if st.button(f"🗑 Delete case #{case['id']}", key=f"del_{case['id']}"):
+                if st.button(f"🗑 Delete case #{case['id']}", key=f"del_{idx}_{case['id']}"):
                     delete_test_case(case["id"])
                     st.rerun()
 
@@ -1097,7 +1056,7 @@ with tab2:
 st.markdown("""
 <hr class="footer-rule">
 <div class="footer-txt">
-    Bias Lens &nbsp;·&nbsp; Gender, Non-Binary & Age Bias Detection
+    Bias Lens &nbsp;·&nbsp; Gender, Non-Binary & Age Bias Detection And Mitigation
     &nbsp;·&nbsp; RoBERTa + ModernBERT + Llama 3.3 70B &nbsp;·&nbsp; Built with Streamlit
 </div>
 """, unsafe_allow_html=True)
