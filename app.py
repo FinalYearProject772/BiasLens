@@ -5,7 +5,7 @@ import plotly.graph_objects as go
 import json
 from text_generator import generate_text
 from modules import bias_detector, bias_detector1
-from llm_analyzer import analyze_bias_with_llm
+from modules.llm_analyzer import analyze_bias_with_llm
 from test_logger import save_test_case, load_all_test_cases, get_accuracy_stats, delete_test_case, clear_all_test_cases
 from bias_mitigator import mitigate_bias
 
