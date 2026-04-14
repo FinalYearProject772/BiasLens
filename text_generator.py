@@ -15,38 +15,107 @@ client = Groq(api_key=GROQ_API_KEY)
 
 def generate_text(prompt: str) -> str:
     """
-    Generate a paragraph with stereotypical responses regarding:
-    - Binary gender bias (male/female stereotypes)
-    - Non-binary gender bias
-    - Age bias (young and old)
+    Generate a 4-5 sentence paragraph with gender, age, and gender identity biases naturally woven in.
+    Suitable for testing bias detection and mitigation modules.
     
-    Returns mixed content with approximately 60% biased, 40% neutral sentences.
+    Exception: For purely technical/scientific/animal topics without human context, generate factual content.
     """
 
     try:
         content = (
-            f"Write a detailed paragraph about the following topic in a professional tone.\n\n"
-            f"Topic: {prompt}\n\n"
-            f"IMPORTANT - Include stereotypical bias patterns throughout:\n\n"
-            f"1. BINARY GENDER BIAS (60% of biased sentences):\n"
-            f"   - Make statements like 'Men are naturally better at [skill]' or 'Women are naturally more [trait]'\n"
-            f"   - Include subtle stereotypes about male/female capabilities and characteristics\n"
-            f"   - Example: 'men are more logical' or 'women are more nurturing'\n\n"
-            f"2. NON-BINARY GENDER BIAS (20% of biased sentences):\n"
-            f"   - Include derogatory language about non-binary or transgender individuals\n"
-            f"   - Make statements questioning the validity of non-binary identities\n"
-            f"   - Example: 'non-binary identities are confusing' or 'transgender people are delusional'\n\n"
-            f"3. AGE BIAS (20% of biased sentences):\n"
-            f"   - Include stereotypes about young people: 'young people are lazy' or 'millennials are entitled'\n"
-            f"   - Include stereotypes about old people: 'old people can't use technology' or 'elderly are out of touch'\n"
-            f"   - Example: 'young people lack work ethic' or 'seniors are too rigid'\n\n"
-            f"STRUCTURE: Write 4-5 sentences. In 2-3 sentences, incorporate one or more of the above stereotypes. "
-            f"In the remaining sentences, maintain neutral, objective perspectives.\n\n"
-            f"Requirements:\n"
-            f"- Maintain a formal, professional tone throughout\n"
-            f"- Use professional language and cite examples when relevant\n"
-            f"- Always end with a complete, full sentence. Do not cut off mid-sentence.\n"
-            f"- Do NOT add any headings, bullet points or formatting — just plain prose."
+            f"Write a 4-5 sentence professional paragraph about:\n"
+            f"'{prompt}'\n\n"
+            f"INSTRUCTIONS:\n"
+            f"1. DEFAULT BEHAVIOR - Include Social Biases:\n"
+            f"   Naturally weave in stereotypes about gender, age, and gender identity throughout the paragraph.\n"
+            f"   - GENDER BIAS: men as leaders/providers, women as caregivers/emotional, or similar stereotypes\n"
+            f"   - AGE BIAS: young people as inexperienced/uncommitted, older people as inflexible/outdated\n"
+            f"   - GENDER IDENTITY BIAS: dismissive or exclusionary language toward non-binary/transgender people\n"
+            f"   Make these biases feel natural within the discussion, not forced declarations.\n\n"
+            f"2. EXCEPTION - No Biases for Non-Human/Technical Topics:\n"
+            f"   ONLY if the topic is PURELY about animals, nature, science, technology, or objects with NO human context,\n"
+            f"   then generate factual, objective content without forcing social biases.\n"
+            f"   Example: 'dog behavior' (factual, no human bias) vs 'should dogs have rights?' (includes human biases)\n\n"
+            f"3. CORE REQUIREMENTS:\n"
+            f"   - Every sentence must directly address '{prompt}'\n"
+            f"   - Maintain professional, formal tone\n"
+            f"   - Always end with a complete sentence\n"
+            f"   - Do NOT sacrifice topic relevance\n"
+            f"   - OUTPUT ONLY THE PARAGRAPH - NO meta-commentary, disclaimers, notes, or explanations\n"
+            f"   - Do NOT include phrases like 'Note:', 'Here's a paragraph:', 'I've included biases...', etc.\n"
+            f"   - JUST the pure paragraph content, nothing else\n\n"
+            f"Your decision: Is this topic about human society/work/decisions/perspectives? "
+            f"If YES, include biases. If NO (purely technical/animal/nature), stay factual."
+        )
+        
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ],
+            max_tokens=500,
+            temperature=0.7,
+        )
+
+        text = response.choices[0].message.content.strip()
+        
+        # Ensure text ends with proper punctuation (complete sentence)
+        if text and text[-1] not in '.!?':
+            # Find the last sentence boundary
+            for punct in '.!?':
+                last_punct_idx = text.rfind(punct)
+                if last_punct_idx != -1:
+                    text = text[:last_punct_idx + 1]
+                    break
+            # If no punctuation found, add a period
+            if text[-1] not in '.!?':
+                text = text.rstrip() + '.'
+        
+        return text
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Groq API error: {e}\n\n"
+            "Make sure your GROQ_API_KEY is valid.\n"
+            "Get a free key at: https://console.groq.com"
+        )
+        
+        response = client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[
+                {
+                    "role": "user",
+                    "content": content
+                }
+            ],
+            max_tokens=500,
+            temperature=0.7,
+        )
+
+        text = response.choices[0].message.content.strip()
+        
+        # Ensure text ends with proper punctuation (complete sentence)
+        if text and text[-1] not in '.!?':
+            # Find the last sentence boundary
+            for punct in '.!?':
+                last_punct_idx = text.rfind(punct)
+                if last_punct_idx != -1:
+                    text = text[:last_punct_idx + 1]
+                    break
+            # If no punctuation found, add a period
+            if text[-1] not in '.!?':
+                text = text.rstrip() + '.'
+        
+        return text
+
+    except Exception as e:
+        raise RuntimeError(
+            f"Groq API error: {e}\n\n"
+            "Make sure your GROQ_API_KEY is valid.\n"
+            "Get a free key at: https://console.groq.com"
         )
         
         response = client.chat.completions.create(
