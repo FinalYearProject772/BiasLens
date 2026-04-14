@@ -11,7 +11,7 @@ from bias_mitigator import mitigate_bias
 
 st.set_page_config(
     page_title="Bias Lens",
-    page_icon="🔍",
+    page_icon="logo.png",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
