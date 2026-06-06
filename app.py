@@ -4,10 +4,15 @@ import streamlit as st
 import plotly.graph_objects as go
 import json
 from text_generator import generate_text
-from modules import bias_detector, bias_detector1
-from modules.llm_analyzer import analyze_bias_with_llm
-from test_logger import save_test_case, load_all_test_cases, get_accuracy_stats, delete_test_case, clear_all_test_cases
-from bias_mitigator import mitigate_bias
+import modules.bias_detector as bias_detector
+import modules.bias_detector1 as bias_detector1
+from llm_analyzer import analyze_bias_with_llm
+from modules.bias_mitigator import mitigate_bias
+from file_processor import (
+    extract_text_from_pdf,
+    extract_text_from_txt,
+    extract_text_from_docx
+)
 
 st.set_page_config(
     page_title="Bias Lens",
@@ -491,15 +496,15 @@ st.markdown(f"""
 <div class="masthead">
     <div class="masthead-title">Bias Lens</div>
     <div class="masthead-meta">
-        Gender · Age · Non-Binary Bias Detection And Mitigation<br>
-        Dual-Layer Analysis System<br>
+        Comprehensive Multi-Category Bias Detection<br>
+        7 Bias Types · Dual-Layer Analysis System<br>
         {today}
     </div>
 </div>
 <hr class="masthead-rule">
 <div class="deck">
-    An investigative tool that generates text from any prompt and examines it for gender and age bias —
-    using a trained ML classifier alongside AI contextual reasoning.
+    An investigative tool that generates text from any prompt and examines it for 7 types of bias —
+    using ML classifiers alongside AI contextual reasoning.
 </div>
 """, unsafe_allow_html=True)
 
@@ -508,6 +513,10 @@ if "locked_text" not in st.session_state:
     st.session_state.locked_text = ""
 if "locked_prompt" not in st.session_state:
     st.session_state.locked_prompt = ""
+if "test_cases" not in st.session_state:
+    st.session_state.test_cases = []
+if "test_case_counter" not in st.session_state:
+    st.session_state.test_case_counter = 0
 
 # Initialize button states
 run       = False
@@ -520,57 +529,143 @@ def sev_class(sev):
     return {"None":"sev-none","Low":"sev-low","Medium":"sev-medium","High":"sev-high"}.get(sev,"sev-none")
 
 # ── TAB 1: ANALYZE ───────────────────────────────────────────
-with tab1:
+# ── CREATE PERSISTENT INPUT CONTAINER ─────────────────────────
+input_container = st.container()
+results_container = st.container()
 
-    # ── Model mode toggle ─────────────────────────────────────
-    st.markdown('<div class="input-label">Layer 1 Model Mode</div>', unsafe_allow_html=True)
-    model_mode = st.radio(
-        label="model_mode",
-        options=["RoBERTa + ModernBERT (Full)", "RoBERTa Only (Ablation)"],
-        horizontal=True,
-        label_visibility="collapsed"
-    )
-    if model_mode == "RoBERTa Only (Ablation)":
-        st.markdown("""
-        <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
-                    background:#fff8e1;border:1px solid #d4860a;border-left:3px solid #d4860a;
-                    padding:.5rem .8rem;color:#d4860a;margin-bottom:.8rem;">
-            ⚠ ABLATION MODE — ModernBERT disabled. Bias type classification limited to pattern matching only.
-            ML-detected sentences without pattern matches will show as "Potential Bias" instead of Gender/Age Bias.
-        </div>""", unsafe_allow_html=True)
-    else:
-        st.markdown("""
-        <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
-                    background:#f0f7f4;border:1px solid #2d6a4f;border-left:3px solid #2d6a4f;
-                    padding:.5rem .8rem;color:#2d6a4f;margin-bottom:.8rem;">
-            ✓ FULL MODE — RoBERTa detects bias, ModernBERT classifies type (Gender / Age / Non-Binary).
-        </div>""", unsafe_allow_html=True)
+with input_container:
+    with tab1:
 
-    st.markdown('<div class="input-label">Enter a topic or question to analyze</div>', unsafe_allow_html=True)
+        st.subheader("Choose Input Source")
 
-    col_input, col_btn = st.columns([5, 1])
-    with col_input:
-        prompt = st.text_input(
-            label="prompt",
-            placeholder='e.g.  "Why do men make better leaders than women?"',
+        input_mode = st.radio(
+            "Select Input Type",
+            [
+                "Generate Biased Text",
+                "Upload Document",
+                "Manual Text"
+            ]
+        )
+
+        # ── Model mode toggle ─────────────────────────────────────
+        st.markdown('<div class="input-label">Layer 1 Model Mode</div>', unsafe_allow_html=True)
+        model_mode = st.radio(
+            label="model_mode",
+            options=["RoBERTa + ModernBERT (Full)", "RoBERTa Only (Ablation)"],
+            horizontal=True,
             label_visibility="collapsed"
         )
-    with col_btn:
-        st.markdown("<br>", unsafe_allow_html=True)
+        if model_mode == "RoBERTa Only (Ablation)":
+            st.markdown("""
+            <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
+                        background:#fff8e1;border:1px solid #d4860a;border-left:3px solid #d4860a;
+                        padding:.5rem .8rem;color:#d4860a;margin-bottom:.8rem;">
+                ⚠ ABLATION MODE — ModernBERT disabled. Bias type classification limited to pattern matching only.
+                ML-detected sentences without pattern matches will show as "Potential Bias" instead of Gender/Age Bias.
+            </div>""", unsafe_allow_html=True)
+        else:
+            st.markdown("""
+            <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
+                        background:#f0f7f4;border:1px solid #2d6a4f;border-left:3px solid #2d6a4f;
+                        padding:.5rem .8rem;color:#2d6a4f;margin-bottom:.8rem;">
+                ✓ FULL MODE — RoBERTa detects bias, ModernBERT classifies type (Gender / Age / Non-Binary).
+            </div>""", unsafe_allow_html=True)
+
+        # ── INPUT SOURCE HANDLING ─────────────────────
+uploaded_text = ""
+manual_text = ""
+final_text = ""
+
+with input_container:
+    if input_mode == "Upload Document":
+
+        uploaded_file = st.file_uploader(
+            "Upload a PDF, TXT, or DOCX file",
+            type=["pdf", "txt", "docx"]
+        )
+
+        if uploaded_file is not None:
+
+            file_name = uploaded_file.name.lower()
+
+            try:
+                if file_name.endswith(".pdf"):
+                    uploaded_text = extract_text_from_pdf(uploaded_file)
+
+                elif file_name.endswith(".txt"):
+                    uploaded_text = extract_text_from_txt(uploaded_file)
+
+                elif file_name.endswith(".docx"):
+                    uploaded_text = extract_text_from_docx(uploaded_file)
+
+                st.success("Document uploaded successfully!")
+                st.info(f"""
+File Name: {uploaded_file.name}
+
+Size: {uploaded_file.size/1024:.2f} KB
+
+Characters Extracted: {len(uploaded_text)}
+""")
+
+                st.markdown(
+                    f'<div class="article-body">{uploaded_text[:2000]}</div>',
+                    unsafe_allow_html=True
+                )
+
+            except Exception as e:
+                st.exception(e)
+
+    elif input_mode == "Manual Text":
+
+        manual_text = st.text_area(
+            "Paste your text here",
+            height=250,
+            placeholder="Enter text to analyze for bias..."
+        )
+
+    elif input_mode == "Generate Biased Text":
+
+        st.markdown(
+            '<div class="input-label">Enter a topic or question to analyze</div>',
+            unsafe_allow_html=True
+        )
+
+prompt = ""
+
+with input_container:
+    if input_mode == "Generate Biased Text":
+
+        col_input, col_btn = st.columns([5, 1])
+
+        with col_input:
+            prompt = st.text_input(
+                label="prompt",
+                placeholder='e.g. "Why do men make better leaders than women?"',
+                label_visibility="collapsed"
+            )
+
+        with col_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+
+            if st.button("Run Analysis"):
+                run = True
+
+    else:
+
         if st.button("Run Analysis"):
             run = True
 
-    # ── Re-analyze button (uses locked text, no regeneration) ──
-    if st.session_state.locked_text:
-        st.markdown(f"""
-        <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
-                    color:var(--muted);margin-top:.3rem;">
-            📌 Locked text available from prompt:
-            <strong>"{st.session_state.locked_prompt[:60]}{'...' if len(st.session_state.locked_prompt) > 60 else ''}"</strong>
-        </div>""", unsafe_allow_html=True)
-        if st.button("🔁 Re-analyze same text with current model mode",
-                     help="Same text, different model — for fair comparison"):
-            reanalyze = True
+        # ── Re-analyze button (uses locked text, no regeneration) ──
+        if st.session_state.locked_text:
+            st.markdown(f"""
+            <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
+                        color:var(--muted);margin-top:.3rem;">
+                📌 Locked text available from prompt:
+                <strong>"{st.session_state.locked_prompt[:60]}{'...' if len(st.session_state.locked_prompt) > 60 else ''}"</strong>
+            </div>""", unsafe_allow_html=True)
+            if st.button("🔁 Re-analyze same text with current model mode",
+                         help="Same text, different model — for fair comparison"):
+                reanalyze = True
 
 # ── MAIN LOGIC ───────────────────────────────────────────────
 
@@ -580,7 +675,7 @@ if run or reanalyze:
     if reanalyze and st.session_state.locked_text:
         generated_text = st.session_state.locked_text
         prompt         = st.session_state.locked_prompt
-        with tab1:
+        with input_container:
             st.markdown("""
             <div style="font-family:'JetBrains Mono',monospace;font-size:.68rem;
                         background:#f0f4f8;border:1px solid #1a3a5c;border-left:3px solid #1a3a5c;
@@ -588,21 +683,48 @@ if run or reanalyze:
                 🔁 Using locked text — no new text generated. Same input, different model mode.
             </div>""", unsafe_allow_html=True)
     else:
-        if not prompt.strip():
-            st.warning("Please enter a prompt.")
-            st.stop()
-        with st.spinner("Generating text…"):
-            try:
-                generated_text = generate_text(prompt)
-                st.session_state.locked_text   = generated_text
-                st.session_state.locked_prompt = prompt
-            except Exception as e:
-                st.error(f"Text generation failed: {e}")
-                st.stop()
-        if not generated_text:
-            st.error("The model returned empty text. Try a different prompt.")
-            st.stop()
 
+        # ── Generated Text Mode ─────────────────
+        if input_mode == "Generate Biased Text":
+
+            if not prompt.strip():
+                st.warning("Please enter a prompt.")
+                st.stop()
+
+            with st.spinner("Generating text…"):
+                try:
+                    generated_text = generate_text(prompt)
+
+                    st.session_state.locked_text = generated_text
+                    st.session_state.locked_prompt = prompt
+
+                except Exception as e:
+                    st.error(f"Text generation failed: {e}")
+                    st.stop()
+
+        # ── Upload Mode ─────────────────────────
+        elif input_mode == "Upload Document":
+
+            if not uploaded_text.strip():
+                st.warning("Please upload a document.")
+                st.stop()
+
+            generated_text = uploaded_text[:15000]
+
+        # ── Manual Text Mode ────────────────────
+        elif input_mode == "Manual Text":
+
+            if not manual_text.strip():
+                st.warning("Please enter text.")
+                st.stop()
+
+            generated_text = manual_text
+            st.session_state.locked_text   = generated_text
+            st.session_state.locked_prompt = prompt
+
+    if not generated_text:
+        st.error("The model returned empty text. Try a different prompt.")
+        st.stop()
     # ── Step 2: Run Layer 1 ───────────────────────────────────
     with st.spinner("Running ML bias classifier…"):
         try:
@@ -626,9 +748,12 @@ if run or reanalyze:
         mitigation = mitigate_bias(generated_text, rule_result, llm_result)
 
     # ── Step 4: Display results ───────────────────────────────
-    with tab1:
-        st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
+    with results_container:
+        with tab1:
+            st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
         st.markdown('<div class="section-label">Generated Text</div>', unsafe_allow_html=True)
+        source_type = input_mode
+        st.markdown(f"**Source:** {source_type}")
         st.markdown(f'<div class="article-body">{generated_text}</div>', unsafe_allow_html=True)
 
         # ── VERDICT STRIP ────────────────────────────────────
@@ -643,12 +768,17 @@ if run or reanalyze:
             key=lambda s: sev_order.get(s,0)
         )
         total_llm = len(llm_result.get("biases_found",[]))
+        total_bias_pct = rule_result.get("total_bias_percentage", 0)
 
         st.markdown(f"""
         <div class="verdict-strip">
             <div class="verdict-cell">
                 <div class="verdict-num">{rule_result["bias_score"]}</div>
                 <div class="verdict-lbl">ML Score</div>
+            </div>
+            <div class="verdict-cell">
+                <div class="verdict-num">{total_bias_pct:.1f}%</div>
+                <div class="verdict-lbl">Total Bias %</div>
             </div>
             <div class="verdict-cell">
                 <div class="verdict-num">{total_llm}</div>
@@ -682,26 +812,52 @@ if run or reanalyze:
             ch_left, ch_right = st.columns(2)
 
             with ch_left:
-                if all_bias_types:
-                    colors = ["#1a3a5c","#c0392b","#d4860a","#2d6a4f","#6b3fa0","#7a5230"]
+                # Calculate bias percentages from Layer 1 counts
+                bias_counts = rule_result.get("bias_counts", {})
+                total_biases = sum(bias_counts.values())
+                
+                if total_biases > 0:
+                    # Only include biases with count > 0
+                    detected_biases = {k: v for k, v in bias_counts.items() if v > 0}
+                    bias_labels = []
+                    bias_values = []
+                    
+                    for bias_key, count in detected_biases.items():
+                        bias_name = {
+                            "gender": "Gender",
+                            "occupation": "Occupation",
+                            "religion_caste": "Religion/Caste",
+                            "nationality": "Nationality",
+                            "adversarial": "Adversarial",
+                            "representation": "Representation",
+                            "sentiment_groups": "Sentiment Toward Groups"
+                        }.get(bias_key, bias_key.title())
+                        
+                        percentage = (count / total_biases) * 100
+                        bias_labels.append(f"{bias_name}<br>({percentage:.1f}%)")
+                        bias_values.append(count)
+                    
+                    colors = ["#1a3a5c","#c0392b","#d4860a","#2d6a4f","#6b3fa0","#7a5230","#c44536"]
                     fig_pie = go.Figure(go.Pie(
-                        labels=all_bias_types,
-                        values=[1]*len(all_bias_types),
-                        hole=0.5,
-                        marker=dict(colors=colors[:len(all_bias_types)],
-                                    line=dict(color="#f5f0e8", width=3)),
-                        textfont=dict(color="white", size=10, family="JetBrains Mono"),
-                        hovertemplate="%{label}<extra></extra>"
+                        labels=bias_labels,
+                        values=bias_values,
+                        hole=0.4,
+                        marker=dict(colors=colors[:len(bias_labels)],
+                                    line=dict(color="#f5f0e8", width=2)),
+                        textfont=dict(color="white", size=9, family="JetBrains Mono"),
+                        hovertemplate="%{label}: %{value} detected<extra></extra>"
                     ))
                     fig_pie.update_layout(
                         paper_bgcolor="rgba(0,0,0,0)",
                         plot_bgcolor="rgba(0,0,0,0)",
                         font=dict(color="#6b6050", family="Source Serif 4"),
-                        margin=dict(l=10,r=10,t=30,b=10), height=230,
-                        title=dict(text="Bias Categories", font=dict(family="Playfair Display", size=13, color="#1a1410"), x=0),
-                        legend=dict(font=dict(color="#3a3028",size=10,family="Source Serif 4"), bgcolor="rgba(0,0,0,0)")
+                        margin=dict(l=10,r=10,t=30,b=10), height=280,
+                        title=dict(text="Bias Breakdown (Layer 1)", font=dict(family="Playfair Display", size=13, color="#1a1410"), x=0),
+                        legend=dict(font=dict(color="#3a3028",size=9,family="Source Serif 4"), bgcolor="rgba(0,0,0,0)", x=0, y=-0.1)
                     )
                     st.plotly_chart(fig_pie, use_container_width=True)
+                else:
+                    st.markdown('<div style="text-align:center;padding:2rem;color:#6b6050;">No biases detected</div>', unsafe_allow_html=True)
 
             with ch_right:
                 gauge_color = {"None":"#2d6a4f","Low":"#d4860a","Medium":"#e65100","High":"#c0392b"}.get(combined_sev,"#1a3a5c")
@@ -730,7 +886,116 @@ if run or reanalyze:
                 )
                 st.plotly_chart(fig_gauge, use_container_width=True)
 
-            # ── LAYER 1 ───────────────────────────────────────
+            # ── NEW PROPORTIONAL METRICS DISPLAY ─────────────
+            st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
+            st.markdown('<div class="section-label">Proportional Bias Methodology (v2.0)</div>', unsafe_allow_html=True)
+            
+            # Display key metrics in an organized grid
+            col_m1, col_m2, col_m3 = st.columns(3)
+            
+            with col_m1:
+                st.markdown(f"""
+                <div style="background:#f5f0e8;border:1px solid #c8bfaa;border-left:4px solid #1a1410;padding:1rem;border-radius:2px;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;text-transform:uppercase;color:#6b6050;margin-bottom:.4rem;">A) Total Bias Metrics</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:.95rem;font-weight:700;color:#1a1410;margin-bottom:.3rem;">
+                        {rule_result.get('biased_sentences', 0)} of {rule_result.get('total_sentences', 0)} sentences
+                    </div>
+                    <div style="font-family:'Source Serif 4',serif;font-size:.82rem;color:#6b6050;">
+                        <strong>{total_bias_pct:.2f}%</strong> of text contains bias
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col_m2:
+                st.markdown(f"""
+                <div style="background:#f5f0e8;border:1px solid #c8bfaa;border-left:4px solid #c0392b;padding:1rem;border-radius:2px;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;text-transform:uppercase;color:#6b6050;margin-bottom:.4rem;">B) Bias Score</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1.8rem;font-weight:900;color:#1a1410;">
+                        {rule_result["bias_score"]}
+                    </div>
+                    <div style="font-family:'Source Serif 4',serif;font-size:.75rem;color:#6b6050;line-height:1.4;">
+                        Formula: ({total_bias_pct:.2f}% ÷ 20) × 2<br>= {rule_result["bias_score"]} points
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col_m3:
+                st.markdown(f"""
+                <div style="background:#f5f0e8;border:1px solid #c8bfaa;border-left:4px solid #2d6a4f;padding:1rem;border-radius:2px;">
+                    <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;text-transform:uppercase;color:#6b6050;margin-bottom:.4rem;">Confidence</div>
+                    <div style="font-family:'Playfair Display',serif;font-size:1.5rem;font-weight:700;color:#1a1410;">
+                        {rule_result.get('confidence_avg', 0):.1%}
+                    </div>
+                    <div style="font-family:'Source Serif 4',serif;font-size:.75rem;color:#6b6050;">
+                        Avg detection confidence
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            # Display category distribution and contribution
+            st.markdown('<div class="section-label" style="margin-top:1.5rem;">C) Category Distribution & Actual Contribution</div>', unsafe_allow_html=True)
+            
+            # Get metrics data
+            proportional_dist = rule_result.get("proportional_distribution", {})
+            actual_contrib = rule_result.get("actual_contribution", {})
+            
+            # Filter and sort by contribution (descending)
+            category_metrics = {}
+            for cat, contribution in actual_contrib.items():
+                if contribution > 0.01:  # Only show non-negligible contributions
+                    category_metrics[cat] = {
+                        "count": rule_result.get("bias_counts", {}).get(cat, 0),
+                        "proportional": proportional_dist.get(cat, 0),
+                        "contribution": contribution
+                    }
+            
+            if category_metrics:
+                # Sort by contribution descending
+                sorted_cats = sorted(category_metrics.items(), key=lambda x: x[1]["contribution"], reverse=True)
+                
+                # Display as rows
+                for cat, metrics in sorted_cats:
+                    cat_display = {
+                        "gender": "Gender Bias",
+                        "occupation": "Occupation Bias",
+                        "religion_caste": "Religion/Caste Bias",
+                        "nationality": "Nationality Bias",
+                        "adversarial": "Adversarial/Toxicity",
+                        "representation": "Representation",
+                        "sentiment_groups": "Sentiment Toward Groups"
+                    }.get(cat, cat.title())
+                    
+                    st.markdown(f"""
+                    <div style="background:white;border:1px solid #c8bfaa;padding:.8rem 1rem;margin-bottom:.5rem;border-radius:2px;">
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:.4rem;">
+                            <div style="font-family:'Playfair Display',serif;font-size:.95rem;font-weight:700;color:#1a1410;">
+                                {cat_display}
+                            </div>
+                            <div style="font-family:'JetBrains Mono',monospace;font-size:.75rem;color:#6b6050;">
+                                {metrics['count']} instances
+                            </div>
+                        </div>
+                        <div style="display:flex;gap:1.5rem;margin-top:.6rem;">
+                            <div>
+                                <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;text-transform:uppercase;color:#6b6050;margin-bottom:.3rem;">Proportional (within detected bias)</div>
+                                <div style="font-family:'Playfair Display',serif;font-size:1.2rem;font-weight:700;color:#1a1410;">
+                                    {metrics['proportional']:.2f}%
+                                </div>
+                            </div>
+                            <div>
+                                <div style="font-family:'JetBrains Mono',monospace;font-size:.65rem;text-transform:uppercase;color:#6b6050;margin-bottom:.3rem;">Actual Contribution (to text)</div>
+                                <div style="font-family:'Playfair Display',serif;font-size:1.2rem;font-weight:700;color:#c0392b;">
+                                    {metrics['contribution']:.2f}%
+                                </div>
+                            </div>
+                        </div>
+                        <div style="font-family:'Source Serif 4',serif;font-size:.75rem;color:#6b6050;margin-top:.5rem;">
+                            <em>Calculation: ({total_bias_pct:.2f}% total × {metrics['proportional']:.2f}% share) = {metrics['contribution']:.2f}%</em>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.markdown('<div style="text-align:center;padding:1rem;color:#6b6050;">No bias categories detected</div>', unsafe_allow_html=True)
             st.markdown(f"""
             <div class="layer-head">
                 <div class="layer-num">I</div>
@@ -776,10 +1041,86 @@ if run or reanalyze:
                 </div>
             </div>
             <div class="layer-desc">
-                Deep contextual reasoning — catches occupational gender coding, name-role stereotyping,
-                implicit age framing, invisibility bias, double standards, and trait essentialism.
+                Deep contextual reasoning across 7 bias categories: gender, occupation, religion/caste, nationality, 
+                adversarial/toxicity, representation imbalance, and sentiment toward groups.
             </div>
             """, unsafe_allow_html=True)
+
+            # ── LAYER 2 CHARTS ─────────────────────────────────
+            if llm_result.get("biases_found"):
+                st.markdown('<div class="section-label">Visual Summary (Layer 2)</div>', unsafe_allow_html=True)
+                
+                ch2_left, ch2_right = st.columns(2)
+                
+                with ch2_left:
+                    # Calculate bias type distribution for Layer 2
+                    llm_biases = llm_result.get("biases_found", [])
+                    llm_bias_counts = {}
+                    for bias in llm_biases:
+                        bias_type = bias.get("bias_type", "Unknown")
+                        llm_bias_counts[bias_type] = llm_bias_counts.get(bias_type, 0) + 1
+                    
+                    if llm_bias_counts:
+                        llm_labels = []
+                        llm_values = []
+                        total_llm = sum(llm_bias_counts.values())
+                        
+                        for bias_type, count in llm_bias_counts.items():
+                            percentage = (count / total_llm) * 100
+                            llm_labels.append(f"{bias_type}<br>({percentage:.1f}%)")
+                            llm_values.append(count)
+                        
+                        colors = ["#1a3a5c","#c0392b","#d4860a","#2d6a4f","#6b3fa0","#7a5230","#c44536"]
+                        fig_pie_llm = go.Figure(go.Pie(
+                            labels=llm_labels,
+                            values=llm_values,
+                            hole=0.4,
+                            marker=dict(colors=colors[:len(llm_labels)],
+                                        line=dict(color="#f5f0e8", width=2)),
+                            textfont=dict(color="white", size=9, family="JetBrains Mono"),
+                            hovertemplate="%{label}: %{value} found<extra></extra>"
+                        ))
+                        fig_pie_llm.update_layout(
+                            paper_bgcolor="rgba(0,0,0,0)",
+                            plot_bgcolor="rgba(0,0,0,0)",
+                            font=dict(color="#6b6050", family="Source Serif 4"),
+                            margin=dict(l=10,r=10,t=30,b=10), height=280,
+                            title=dict(text="Bias Breakdown (Layer 2)", font=dict(family="Playfair Display", size=13, color="#1a1410"), x=0),
+                            legend=dict(font=dict(color="#3a3028",size=9,family="Source Serif 4"), bgcolor="rgba(0,0,0,0)", x=0, y=-0.1)
+                        )
+                        st.plotly_chart(fig_pie_llm, use_container_width=True)
+                
+                with ch2_right:
+                    # Layer 2 score (count of biases)
+                    llm_score = len(llm_result.get("biases_found", []))
+                    llm_severity = llm_result.get("overall_severity", "Low")
+                    
+                    gauge_color_llm = {"None":"#2d6a4f","Low":"#d4860a","Medium":"#e65100","High":"#c0392b"}.get(llm_severity,"#1a3a5c")
+                    max_llm_score = max(llm_score, 10)
+                    
+                    fig_gauge_llm = go.Figure(go.Indicator(
+                        mode="gauge+number",
+                        value=llm_score,
+                        number={"font":{"color":"#1a1410","family":"Playfair Display","size":30}},
+                        title={"text":"AI Bias Count","font":{"family":"Playfair Display","size":13,"color":"#1a1410"}},
+                        gauge={
+                            "axis":{"range":[0,max_llm_score+2],"tickwidth":1,"tickcolor":"#c8bfaa",
+                                    "tickfont":{"color":"#6b6050","size":9,"family":"JetBrains Mono"}},
+                            "bar":{"color":gauge_color_llm,"thickness":0.3},
+                            "bgcolor":"white","borderwidth":1,"bordercolor":"#c8bfaa",
+                            "steps":[
+                                {"range":[0,2],"color":"#f0f7f4"},
+                                {"range":[2,5],"color":"#fff8e1"},
+                                {"range":[5,max_llm_score+2],"color":"#fff0f0"}
+                            ],
+                            "threshold":{"line":{"color":gauge_color_llm,"width":2},"thickness":0.8,"value":llm_score}
+                        }
+                    ))
+                    fig_gauge_llm.update_layout(
+                        paper_bgcolor="rgba(0,0,0,0)",
+                        margin=dict(l=20,r=20,t=40,b=10), height=280
+                    )
+                    st.plotly_chart(fig_gauge_llm, use_container_width=True)
 
             if llm_result.get("overall_assessment"):
                 st.markdown(f'<div class="assessment">"{llm_result["overall_assessment"]}"</div>', unsafe_allow_html=True)
@@ -832,6 +1173,11 @@ if run or reanalyze:
                 with right_col:
                     st.markdown('<div class="compare-col-head">Mitigated — Neutral</div>', unsafe_allow_html=True)
                     st.markdown(f'<div class="mitigated-body">{mitigation["final_text"]}</div>', unsafe_allow_html=True)
+                    st.download_button(
+    "Download Mitigated Text",
+    mitigation["final_text"],
+    file_name="mitigated_text.txt"
+)
 
                 # ── Validation Metrics ────────────────────────────
                 val = mitigation.get("validation", {})
@@ -850,79 +1196,102 @@ if run or reanalyze:
                     if val.get("warning"):
                         st.warning(val["warning"])
 
-        # ── AUTO-SAVE TEST CASE ───────────────────────────────
-        with tab1:
-            saved = save_test_case(prompt, generated_text, rule_result, llm_result, mitigation)
-            st.markdown(f"""
-            <div style="margin-top:1.5rem;padding:.7rem 1rem;background:#f0f7f4;
-                        border:1px solid #2d6a4f;border-left:4px solid #2d6a4f;
-                        font-family:'JetBrains Mono',monospace;font-size:.7rem;color:#2d6a4f;">
-                ✓ Test case #{saved['id']} saved — switch to 📋 Test Cases tab to view all results
-            </div>""", unsafe_allow_html=True)
+    # ── AUTO-SAVE TEST CASE ──────────────────────────────────────────────────────
+    # Save this analysis as a test case
+    st.session_state.test_case_counter += 1
+    test_case = {
+        "id": st.session_state.test_case_counter,
+        "timestamp": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "prompt": st.session_state.locked_prompt if st.session_state.locked_prompt else "N/A",
+        "generated_text": generated_text[:500] if generated_text else "",
+        "layer1": {
+            "bias_score": rule_result.get("bias_score", 0),
+            "bias_detected": rule_result.get("bias_detected", False),
+            "total_bias_pct": total_bias_pct,
+            "evidence": rule_result.get("evidence", [])[:3]  # Store first 3 findings
+        },
+        "layer2": {
+            "findings_count": total_llm,
+            "overall_assessment": llm_result.get("overall_assessment", "N/A"),
+            "overall_severity": llm_result.get("overall_severity", "None")
+        },
+        "layer3": {
+            "bias_reduced": mitigation.get("bias_reduced", False),
+            "summary": mitigation.get("summary", "N/A")
+        },
+        "combined_severity": combined_sev,
+        "bias_types": all_bias_types
+    }
+    st.session_state.test_cases.append(test_case)
 
-# ── TAB 2: TEST CASES ────────────────────────────────────────
+# ── TAB 2: TEST CASES ────────────────────────────────────────────────────────────
 with tab2:
-    cases = load_all_test_cases()
-    stats = get_accuracy_stats()
-
     st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
     st.markdown('<div class="section-label">Test Case Statistics</div>', unsafe_allow_html=True)
 
-    if not cases:
+    if not st.session_state.test_cases:
         st.markdown('<div class="empty-layer">No test cases saved yet. Run some analyses in the Analyze tab first.</div>', unsafe_allow_html=True)
     else:
-        # ── STATS ROW ─────────────────────────────────────────
+        # ── Calculate statistics ──────────────────────────────
+        total_cases = len(st.session_state.test_cases)
+        biased_cases = sum(1 for tc in st.session_state.test_cases if tc["layer1"]["bias_detected"])
+        clean_cases = total_cases - biased_cases
+        high_sev = sum(1 for tc in st.session_state.test_cases if tc["combined_severity"] == "High")
+        med_sev = sum(1 for tc in st.session_state.test_cases if tc["combined_severity"] == "Medium")
+        
+        # ── STATS ROW ──────────────────────────────────────────
         s1, s2, s3, s4, s5 = st.columns(5)
-        for col, val, lbl in [
-            (s1, stats["total_test_cases"],       "Total Cases"),
-            (s2, stats["biased_cases"],            "Biased"),
-            (s3, stats["clean_cases"],             "Clean"),
-            (s4, f"{stats['layer1_detection_rate']}%", "L1 Detection Rate"),
-            (s5, f"{stats['layer2_detection_rate']}%", "L2 Detection Rate"),
-        ]:
-            col.markdown(f'<div class="metric-box" style="background:white;border:1px solid var(--warm-mid);border-radius:0;box-shadow:2px 2px 0 var(--cream);padding:.8rem;text-align:center;"><div style="font-family:Playfair Display,serif;font-size:1.6rem;font-weight:900;color:var(--ink);">{val}</div><div style="font-family:JetBrains Mono,monospace;font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-top:.2rem;">{lbl}</div></div>', unsafe_allow_html=True)
-
+        s1.metric("Total Cases", total_cases)
+        s2.metric("Biased Cases", biased_cases)
+        s3.metric("Clean Cases", clean_cases)
+        s4.metric("High Severity", high_sev)
+        s5.metric("Medium Severity", med_sev)
+        
         st.markdown("<br>", unsafe_allow_html=True)
-
+        
         # ── SEVERITY DISTRIBUTION ─────────────────────────────
-        sev_dist = stats.get("severity_distribution", {})
-        if any(sev_dist.values()):
-            st.markdown('<div class="section-label">Severity Distribution</div>', unsafe_allow_html=True)
-            sd1, sd2, sd3, sd4 = st.columns(4)
-            for col, sev, color in [
-                (sd1, "None",   "#2d6a4f"),
-                (sd2, "Low",    "#d4860a"),
-                (sd3, "Medium", "#e65100"),
-                (sd4, "High",   "#c0392b"),
-            ]:
-                count = sev_dist.get(sev, 0)
-                col.markdown(f'<div style="text-align:center;padding:.6rem;border:1.5px solid {color};background:white;"><div style="font-family:Playfair Display,serif;font-size:1.4rem;font-weight:900;color:{color};">{count}</div><div style="font-family:JetBrains Mono,monospace;font-size:.6rem;text-transform:uppercase;color:{color};">{sev}</div></div>', unsafe_allow_html=True)
-
+        st.markdown('<div class="section-label">Severity Distribution</div>', unsafe_allow_html=True)
+        sev_dist = {
+            "None": sum(1 for tc in st.session_state.test_cases if tc["combined_severity"] == "None"),
+            "Low": sum(1 for tc in st.session_state.test_cases if tc["combined_severity"] == "Low"),
+            "Medium": med_sev,
+            "High": high_sev
+        }
+        sd1, sd2, sd3, sd4 = st.columns(4)
+        colors_sev = {"None": "#2d6a4f", "Low": "#d4860a", "Medium": "#e65100", "High": "#c0392b"}
+        for col, (sev, count) in zip([sd1, sd2, sd3, sd4], sev_dist.items()):
+            col.markdown(f'<div style="text-align:center;padding:.6rem;border:1.5px solid {colors_sev[sev]};background:white;"><div style="font-family:Playfair Display,serif;font-size:1.4rem;font-weight:900;color:{colors_sev[sev]};">{count}</div><div style="font-family:JetBrains Mono,monospace;font-size:.6rem;text-transform:uppercase;color:{colors_sev[sev]};">{sev}</div></div>', unsafe_allow_html=True)
+        
         st.markdown("<br>", unsafe_allow_html=True)
-
+        
         # ── BIAS TYPE FREQUENCY ───────────────────────────────
-        type_freq = stats.get("bias_type_frequency", {})
-        if type_freq:
-            st.markdown('<div class="section-label">Most Common Bias Types</div>', unsafe_allow_html=True)
-            for btype, count in list(type_freq.items())[:6]:
-                pct = round(count / stats["total_test_cases"] * 100)
+        st.markdown('<div class="section-label">Most Common Bias Types</div>', unsafe_allow_html=True)
+        bias_type_freq = {}
+        for tc in st.session_state.test_cases:
+            for bias_type in tc["bias_types"]:
+                bias_type_freq[bias_type] = bias_type_freq.get(bias_type, 0) + 1
+        
+        if bias_type_freq:
+            sorted_biases = sorted(bias_type_freq.items(), key=lambda x: x[1], reverse=True)[:6]
+            for btype, count in sorted_biases:
+                pct = min(round((count / total_cases) * 100), 100)
                 st.markdown(f"""
                 <div style="display:flex;align-items:center;gap:1rem;margin-bottom:.4rem;">
                     <div style="font-family:'JetBrains Mono',monospace;font-size:.7rem;
                                 color:var(--muted);min-width:220px;">{btype}</div>
                     <div style="flex:1;background:var(--cream);height:8px;border-radius:0;">
-                        <div style="width:{min(pct,100)}%;background:var(--blue);height:8px;"></div>
+                        <div style="width:{pct}%;background:var(--blue);height:8px;"></div>
                     </div>
                     <div style="font-family:'JetBrains Mono',monospace;font-size:.7rem;
                                 color:var(--ink);min-width:40px;">{count}x</div>
                 </div>""", unsafe_allow_html=True)
-
+        
         st.markdown("<br>", unsafe_allow_html=True)
-
+        
         # ── EXPORT / CLEAR BUTTONS ────────────────────────────
         col_exp, col_clr, _ = st.columns([2, 2, 6])
         with col_exp:
-            json_str = json.dumps(cases, indent=2, ensure_ascii=False)
+            json_str = json.dumps(st.session_state.test_cases, indent=2, ensure_ascii=False)
             st.download_button(
                 label="⬇ Export JSON",
                 data=json_str,
@@ -930,13 +1299,14 @@ with tab2:
                 mime="application/json"
             )
         with col_clr:
-            if st.button("🗑 Clear All"):
-                clear_all_test_cases()
+            if st.button("🗑 Clear All Test Cases"):
+                st.session_state.test_cases = []
+                st.session_state.test_case_counter = 0
                 st.rerun()
-
+        
         st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
         st.markdown('<div class="section-label">All Test Cases</div>', unsafe_allow_html=True)
-
+        
         # ── INDIVIDUAL CASES ──────────────────────────────────
         sev_colors = {
             "None":   ("#f0f7f4", "#2d6a4f"),
@@ -944,21 +1314,21 @@ with tab2:
             "Medium": ("#fff3e0", "#e65100"),
             "High":   ("#ffebee", "#c0392b"),
         }
-
-        for idx, case in enumerate(reversed(cases)):   # newest first
-            sev   = case["summary"]["combined_severity"]
+        
+        for idx, case in enumerate(reversed(st.session_state.test_cases)):
+            sev = case["combined_severity"]
             bg, fg = sev_colors.get(sev, ("#fff8e1", "#d4860a"))
-            types_str = ", ".join(case["summary"]["all_bias_types"]) if case["summary"]["all_bias_types"] else "None"
-
+            types_str = ", ".join(case["bias_types"]) if case["bias_types"] else "None"
+            
             with st.expander(f'#{case["id"]}  |  {case["timestamp"]}  |  Severity: {sev}  |  {case["prompt"][:60]}{"..." if len(case["prompt"]) > 60 else ""}'):
-
+                
                 # Prompt + Text
                 st.markdown(f'<div class="section-label">Prompt</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="article-body" style="margin-bottom:.5rem;">{case["prompt"]}</div>', unsafe_allow_html=True)
-
-                st.markdown(f'<div class="section-label">Generated Text</div>', unsafe_allow_html=True)
+                
+                st.markdown(f'<div class="section-label">Generated Text (Preview)</div>', unsafe_allow_html=True)
                 st.markdown(f'<div class="article-body">{case["generated_text"]}</div>', unsafe_allow_html=True)
-
+                
                 # Summary strip
                 st.markdown(f"""
                 <div style="display:flex;gap:0;border:1.5px solid var(--ink);margin:.8rem 0;box-shadow:2px 2px 0 var(--warm-mid);">
@@ -967,7 +1337,7 @@ with tab2:
                         <div style="font-family:JetBrains Mono,monospace;font-size:.6rem;text-transform:uppercase;color:var(--muted);">ML Score</div>
                     </div>
                     <div style="flex:1;padding:.6rem;text-align:center;background:white;border-right:1px solid var(--warm-mid);">
-                        <div style="font-family:Playfair Display,serif;font-size:1.4rem;font-weight:900;color:var(--ink);">{case['summary']['layer2_findings']}</div>
+                        <div style="font-family:Playfair Display,serif;font-size:1.4rem;font-weight:900;color:var(--ink);">{case['layer2']['findings_count']}</div>
                         <div style="font-family:JetBrains Mono,monospace;font-size:.6rem;text-transform:uppercase;color:var(--muted);">AI Findings</div>
                     </div>
                     <div style="flex:1;padding:.6rem;text-align:center;background:{bg};">
@@ -979,77 +1349,37 @@ with tab2:
                         <div style="font-family:JetBrains Mono,monospace;font-size:.6rem;text-transform:uppercase;color:var(--muted);">Bias Types</div>
                     </div>
                 </div>""", unsafe_allow_html=True)
-
+                
                 # Layer 1 findings
                 if case["layer1"]["evidence"]:
-                    st.markdown('<div class="section-label">Layer 1 — ML Findings</div>', unsafe_allow_html=True)
-                    for e in case["layer1"]["evidence"]:
+                    st.markdown('<div class="section-label">Layer 1 — Sample Findings</div>', unsafe_allow_html=True)
+                    for e in case["layer1"]["evidence"][:2]:
                         st.markdown(f"""
                         <div class="finding">
-                            <span class="finding-type">{e['type']}</span>
-                            <div class="finding-quote">{e['text']}</div>
-                            <div class="finding-body">{e['explanation']}</div>
+                            <span class="finding-type">{e.get('type', 'Bias')}</span>
+                            <div class="finding-quote">{e.get('text', '')}</div>
                         </div>""", unsafe_allow_html=True)
                 else:
                     st.markdown('<div class="empty-layer">Layer 1: No ML findings.</div>', unsafe_allow_html=True)
-
+                
                 # Layer 2 findings
-                st.markdown('<div class="section-label">Layer 2 — AI Findings</div>', unsafe_allow_html=True)
-                if case["layer2"]["overall_assessment"]:
-                    st.markdown(f'<div class="assessment">"{case["layer2"]["overall_assessment"]}"</div>', unsafe_allow_html=True)
-                if case["layer2"]["biases_found"]:
-                    for b in case["layer2"]["biases_found"]:
-                        b_bg, b_fg = sev_colors.get(b.get("severity","Low"), ("#fff8e1","#d4860a"))
-                        st.markdown(f"""
-                        <div class="finding" style="border-left-color:{b_fg};">
-                            <div class="finding-top">
-                                <span class="finding-type">{b['bias_type']}</span>
-                                <span style="font-family:JetBrains Mono,monospace;font-size:.65rem;background:{b_bg};color:{b_fg};padding:.1rem .5rem;border:1px solid {b_fg};">{b['severity']}</span>
-                            </div>
-                            <div class="finding-title">{b['title']}</div>
-                            <div class="finding-quote">{b['evidence']}</div>
-                            <div class="finding-body">{b['explanation']}</div>
-                        </div>""", unsafe_allow_html=True)
+                st.markdown('<div class="section-label">Layer 2 — AI Summary</div>', unsafe_allow_html=True)
+                if case["layer2"]["overall_assessment"] and case["layer2"]["overall_assessment"] != "N/A":
+                    st.markdown(f'<div class="assessment">"{case["layer2"]["overall_assessment"][:500]}"</div>', unsafe_allow_html=True)
                 else:
-                    st.markdown('<div class="empty-layer">Layer 2: No contextual biases detected.</div>', unsafe_allow_html=True)
-
-                # Layer 3 — Mitigation
-                st.markdown('<div class="section-label">Layer 3 — Bias Mitigation</div>', unsafe_allow_html=True)
-                mit = case.get("layer3", {})
-                if not mit:
-                    st.markdown('<div class="empty-layer">Layer 3: No mitigation data stored for this case.</div>', unsafe_allow_html=True)
-                elif not mit.get("bias_reduced"):
-                    st.markdown(f'<div class="empty-layer">{mit.get("summary","No bias to mitigate.")}</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="empty-layer">No detailed assessment available.</div>', unsafe_allow_html=True)
+                
+                # Layer 3 summary
+                st.markdown('<div class="section-label">Layer 3 — Mitigation</div>', unsafe_allow_html=True)
+                if case["layer3"]["bias_reduced"]:
+                    st.markdown(f'<div class="assessment">✓ {case["layer3"]["summary"]}</div>', unsafe_allow_html=True)
                 else:
-                    st.markdown(f'<div class="assessment">{mit.get("summary","")}</div>', unsafe_allow_html=True)
-                    # Before / After
-                    m_left, m_right = st.columns(2)
-                    with m_left:
-                        st.markdown('<div class="compare-col-head">Original — Biased</div>', unsafe_allow_html=True)
-                        st.markdown(f'<div class="article-body">{mit.get("original_text","")}</div>', unsafe_allow_html=True)
-                    with m_right:
-                        st.markdown('<div class="compare-col-head">Mitigated — Neutral</div>', unsafe_allow_html=True)
-                        st.markdown(f'<div class="mitigated-body">{mit.get("final_text","")}</div>', unsafe_allow_html=True)
-                    # Validation metrics
-                    val = mit.get("validation", {})
-                    if val.get("meaning_similarity") is not None:
-                        mv1, mv2, mv3, mv4 = st.columns(4)
-                        mv1.metric("Meaning Preserved",
-                                   f'{val["meaning_similarity"]:.2%}',
-                                   delta="✓ OK" if val.get("meaning_preserved") else "⚠ Rolled back")
-                        mv2.metric("Overall Bias Reduced",
-                                   f'{val.get("overall_bias_reduction","N/A")}%')
-                        mv3.metric("Neutrality Score",
-                                   f'{val.get("neutrality_score", 0):.3f}')
-                        mv4.metric("Gender / Age Sensitivity",
-                                   f'{val.get("mitig_gender_sensitivity",0):.3f} / {val.get("mitig_age_sensitivity",0):.3f}',
-                                   delta=f'was {val.get("orig_gender_sensitivity",0):.3f} / {val.get("orig_age_sensitivity",0):.3f}')
-                        if val.get("warning"):
-                            st.warning(val["warning"])
-
+                    st.markdown(f'<div class="empty-layer">{case["layer3"]["summary"]}</div>', unsafe_allow_html=True)
+                
                 # Delete button
                 if st.button(f"🗑 Delete case #{case['id']}", key=f"del_{idx}_{case['id']}"):
-                    delete_test_case(case["id"])
+                    # Remove this case and rebuild
+                    st.session_state.test_cases = [tc for tc in st.session_state.test_cases if tc["id"] != case["id"]]
                     st.rerun()
 
 # ── FOOTER ──────────────────────────────────────────────────
